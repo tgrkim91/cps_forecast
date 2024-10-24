@@ -177,3 +177,42 @@ def cpd_monaco_accuracy_channel_plot(df, monaco_segment, size=(13, 80)):
         ax.legend(h1 + h2, l1 + l2, bbox_to_anchor=(1.1, 1), loc='upper left', borderaxespad=0.)
 
     plt.show()
+
+def calculate_accuracy_measures(top_n_channels, cpd_payback, monaco_payback):
+    # Filter data for the specified period
+    cpd_payback_2024 = cpd_payback.loc[cpd_payback.forecast_month >= '2024-01-01'].reset_index(drop=True)
+    
+    # Get the top N channels based on data volume
+    top_channels = cpd_payback_2024.groupby(['channels'])['data_volume_y'].mean().sort_values(ascending=False)[:top_n_channels].index.to_list()
+    
+    # Filter monaco_payback data for the top N channels
+    monaco_payback_2024_top_n = monaco_payback.loc[(monaco_payback.forecast_month >= '2024-01-01') & (monaco_payback.channels.isin(top_channels))].reset_index(drop=True)
+    
+    # Calculate average MAPE for all segments
+    avg_MAPE_v2_all = monaco_payback_2024_top_n['MAPE_v2'].mean()
+    avg_MAPE_v1_all = monaco_payback_2024_top_n['MAPE_v1'].mean()
+    
+    # Calculate average MAPE for segment A
+    avg_MAPE_v2_A = monaco_payback_2024_top_n.loc[monaco_payback_2024_top_n.monaco_bin.isin(['A1', 'A2', 'A3'])]['MAPE_v2'].mean()
+    avg_MAPE_v1_A = monaco_payback_2024_top_n.loc[monaco_payback_2024_top_n.monaco_bin.isin(['A1', 'A2', 'A3'])]['MAPE_v1'].mean()
+    
+    # Calculate average MAPE for other segments
+    avg_MAPE_REST = monaco_payback_2024_top_n.groupby('monaco_bin', as_index=False)[['MAPE_v2', 'MAPE_v1']].mean()
+    avg_MAPE_REST.rename({'monaco_bin': 'Segments', 'MAPE_v2': 'avg_MAPE_v2', 'MAPE_v1': 'avg_MAPE_v1'}, axis=1, inplace=True)
+    avg_MAPE_REST['channels'] = f'top_{top_n_channels}_channels'
+    avg_MAPE_REST['Period'] = '2024-01 ~ 2024-09'
+    
+    # Create rows for all segments and append to accuracy_measure_A
+    accuracy_measure_A = pd.DataFrame({
+        'channels': [f'top_{top_n_channels}_channels'] * 2,
+        'Period': ['2024-01 ~ 2024-09'] * 2,
+        'Segments': ['All', 'A'],
+        'avg_MAPE_v2': [avg_MAPE_v2_all, avg_MAPE_v2_A],
+        'avg_MAPE_v1': [avg_MAPE_v1_all, avg_MAPE_v1_A]
+    })
+    
+    # Combine all accuracy measures
+    accuracy_measure_top_n = pd.concat([accuracy_measure_A, avg_MAPE_REST.loc[~avg_MAPE_REST.Segments.isin(['A1', 'A2', 'A3'])]], ignore_index=True)
+    accuracy_measure_top_n['pcnt_MAPE_improvement'] = (accuracy_measure_top_n['avg_MAPE_v1'] - accuracy_measure_top_n['avg_MAPE_v2'])*100/accuracy_measure_top_n['avg_MAPE_v1']
+
+    return accuracy_measure_top_n
