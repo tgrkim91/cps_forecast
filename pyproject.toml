@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "cps-forecast"
+version = "0.1.0"
+description = ""
+authors = ["Tim Kim <tkim@turo.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+pandas = "^2.2.3"
+numpy = "^2.1.2"
+python-ml-common = {git = "https://github.com/turo/python-ml-common.git"}
+
+
+[tool.poetry.group.dev.dependencies]
+ipykernel = "^6.29.5"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
