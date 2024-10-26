@@ -60,6 +60,240 @@ from
             (select * from #data_warehouse_signups_pick)))
 where rank1=1;
 
+DROP TABLE IF EXISTS #temp_guest_activation;
+SELECT DISTINCT a.driver_id
+     , FIRST_VALUE(reservation_id)  OVER (PARTITION BY a.driver_id ORDER BY created       ROWS UNBOUNDED PRECEDING)       AS first_booking_reservation_id
+     , FIRST_VALUE(reservation_id)  OVER (PARTITION BY a.driver_id ORDER BY trip_start_ts ROWS UNBOUNDED PRECEDING)       AS activation_reservation_id
+     , FIRST_VALUE(created)         OVER (PARTITION BY a.driver_id ORDER BY created       ROWS UNBOUNDED PRECEDING)::D    AS first_booking_date
+     , FIRST_VALUE(trip_start_ts)   OVER (PARTITION BY a.driver_id ORDER BY trip_start_ts ROWS UNBOUNDED PRECEDING)::D    AS activation_date
+INTO #temp_guest_activation
+FROM analytics.reservation_summary a
+inner join #temp_signup_base b
+on a.driver_id=b.driver_id
+WHERE 1 = 1
+  AND is_ever_booked IN (1)
+  AND current_status NOT IN (2, 11)
+  and trip_start_ts IS NOT NULL
+;
+
+DROP TABLE IF EXISTS #temp_guest_base;
+SELECT sb.driver_id
+  , sb.signup_date
+  , sb.signup_month
+  , sb.channels
+  , sb.platform
+  , sb.country
+  , ga.first_booking_date::D                        AS first_booking_date
+  , DATE_TRUNC('month', ga.first_booking_date)::D   AS first_booking_month
+  , ga.activation_date::D                           AS activation_date
+  , DATE_TRUNC('month', ga.activation_date)::D      AS activation_month
+INTO #temp_guest_base
+FROM #temp_signup_base sb
+    LEFT JOIN #temp_guest_activation ga
+        ON sb.driver_id = ga.driver_id
+;
+
+DROP TABLE IF EXISTS #temp_guest_group_map;
+SELECT *
+     , DENSE_RANK() OVER (ORDER BY
+       country
+     , channels
+     , signup_month
+     ) AS group_id
+INTO #temp_guest_group_map
+FROM #temp_guest_base
+;
+
+DROP TABLE IF EXISTS #temp_guest_group;
+SELECT a.group_id
+     , a.country
+     , a.channels
+     , a.signup_month
+     , b.signups
+INTO #temp_guest_group
+FROM #temp_guest_group_map a
+left join
+    (select country,channels,signup_month,count(distinct driver_id) as signups
+        from #temp_guest_group_map
+        group by 1,2,3) b
+on a.country=b.country and a.channels=b.channels and a.signup_month=b.signup_month
+GROUP BY 1, 2, 3, 4, 5
+;
+
+DROP TABLE IF EXISTS #temp_guest_group_add_activations;
+SELECT group_id
+     , country
+     , channels
+     , signup_month
+     , FLOOR(DATEDIFF(day, signup_date, activation_date)/30) + 1 AS increments_from_signup
+     , count(distinct driver_id) as activations
+INTO #temp_guest_group_add_activations
+FROM #temp_guest_group_map
+where activation_date is not null
+group by 1,2,3,4,5;
+
+DROP TABLE IF EXISTS #temp_guest_revenue_summary;
+select t1.*,
+       t2.activations,
+       sum(t2.activations) over (partition by t2.group_id order by t2.increments_from_signup ROWS UNBOUNDED PRECEDING) as accumulated_activations
+INTO #temp_guest_revenue_summary
+from
+    (SELECT gm.group_id
+         , FLOOR(DATEDIFF(day, gm.signup_date, grb.date::date)/30) + 1 AS increments_from_signup
+         , SUM(grb.gross_revenue_usd)  AS gross_revenue_usd
+         , SUM(CASE WHEN grb.revenue_category IN ('rental_revenue', 'rental_revenue_discount', 'rental_revenue_boost') THEN grb.gross_revenue_usd ELSE 0 END)                       AS trip_revenue_usd
+         , SUM(grb.host_payment_usd)                                                                                                                                                AS host_earnings_usd
+         , SUM(grb.net_revenue_usd)                                                                                                                                                 AS net_revenue_usd
+         , SUM(CASE WHEN rs.is_ever_booked = 1 AND rs.current_status NOT IN (2, 11) AND grb.revenue_category = 'rental_revenue' THEN booked_noc_days ELSE 0 END)                    AS booked_noc_days
+         , SUM(CASE WHEN rs.is_ever_booked = 1 AND rs.current_status NOT IN (2, 11) AND grb.revenue_category = 'rental_revenue' THEN paid_days ELSE 0 END)                          AS paid_days
+         , SUM(CASE WHEN rs.is_ever_booked = 1 AND rs.current_status NOT IN (2, 11) AND grb.revenue_category = 'rental_revenue' THEN gaap_trip_count ELSE 0 END)                    AS trips
+         , COUNT(DISTINCT CASE WHEN rs.is_ever_booked = 1 AND rs.current_status NOT IN (2, 11) AND grb.revenue_category = 'rental_revenue' THEN grb.reservation_id || grb.date END) AS trip_days
+         , COUNT(DISTINCT CASE WHEN rs.is_ever_booked = 1 AND rs.current_status NOT IN (2, 11) AND grb.revenue_category = 'rental_revenue' THEN rs.driver_id END)                   AS active_guests
+
+    FROM finance.gaap_revenue_breakdown grb
+             JOIN analytics.reservation_summary rs
+                  ON rs.reservation_id = grb.reservation_id
+             JOIN #temp_guest_group_map gm
+                  ON rs.driver_id = gm.driver_id
+    WHERE 1 = 1
+      and grb.date>=gm.activation_date
+      AND grb.date < CURRENT_DATE - 1
+      AND DATEADD('month', CAST(increments_from_signup - 1 AS int), gm.signup_month)::Date < DATE_TRUNC('month', CURRENT_DATE)::Date
+    GROUP BY 1, 2) t1
+left join #temp_guest_group_add_activations t2
+on t1.group_id=t2.group_id and t1.increments_from_signup=t2.increments_from_signup
+;
+
+
+DROP TABLE IF EXISTS #temp_guest_cost_summary;
+SELECT gm.group_id
+     , FLOOR(DATEDIFF(day, gm.signup_date, d.date::date)/30) + 1 AS increments_from_signup
+     , SUM(NVL(ps.protection_total      , 0) / rd.paid_days::FLOAT)     AS protection_cost
+     , SUM(NVL(ps.liability_total       , 0) / rd.paid_days::FLOAT)     AS cost_liability
+     , SUM(NVL(ps.customer_support      , 0) / rd.paid_days::FLOAT)     AS customer_support_cost
+     , SUM(NVL(ps.payment_processing    , 0) / rd.paid_days::FLOAT)     AS payment_processing_cost
+     , SUM(NVL(ps.incidental_bad_debt   , 0) / rd.paid_days::FLOAT)     AS incidental_bad_debt
+     , SUM(NVL(ps.chargeback_plus_fee   , 0) / rd.paid_days::FLOAT)     AS chargebacks
+     , SUM(NVL(ps.valet                 , 0) / rd.paid_days::FLOAT)     AS valet
+     , SUM((NVL(ps.protection_total     , 0)
+         + NVL(ps.liability_total       , 0)
+         + NVL(ps.customer_support      , 0)
+         + NVL(ps.payment_processing    , 0)
+         + NVL(ps.incidental_bad_debt   , 0)
+         + NVL(ps.chargeback_plus_fee   , 0)
+         + NVL(ps.valet                 , 0)) / rd.paid_days::FLOAT)    AS total_cost
+INTO #temp_guest_cost_summary
+FROM finance.reservation_profit_summary ps -- how many months
+         JOIN analytics.reservation_summary rs
+              ON ps.reservation_id = rs.reservation_id
+         JOIN analytics.reservation_dimensions rd
+              ON rs.reservation_id = rd.reservation_id
+         JOIN #temp_guest_group_map gm
+              ON rs.driver_id = gm.driver_id
+         JOIN analytics.date d
+              ON d.date BETWEEN COALESCE(CASE WHEN rs.current_status IN (2, 11) THEN rs.modified::D END, rs.current_start_ts::D)
+                            AND COALESCE(CASE WHEN rs.current_status IN (2, 11) THEN rs.modified::D END, DATEADD('day', ABS(rd.paid_days)::INT - 1, rs.current_start_ts::D))
+WHERE 1 = 1
+  and d.date>=gm.activation_date
+  AND COALESCE(CASE WHEN rs.current_status IN (2, 11) THEN rs.modified::DATE END, d.date) < CURRENT_DATE - 1
+  AND DATEADD('month', CAST(increments_from_signup - 1 AS int), gm.signup_month)::Date < DATE_TRUNC('month', CURRENT_DATE)::Date
+GROUP BY 1, 2
+;
+
+drop table if exists #temp_search_session;
+select gm.group_id
+     , FLOOR(DATEDIFF(day, gm.signup_date, sd.created::date)/30) + 1 AS increments_from_signup
+     , count(sd.session_id) as search_sessions
+into #temp_search_session
+from analytics.session_dimensions sd
+         JOIN #temp_guest_group_map gm
+              ON sd.driver_id = gm.driver_id
+WHERE 1 = 1
+  and sd.search=1
+  and sd.created>=gm.signup_date
+  AND sd.created < CURRENT_DATE - 1
+  AND DATEADD('month', CAST(increments_from_signup - 1 AS int), gm.signup_month)::Date < DATE_TRUNC('month', CURRENT_DATE)::Date
+group by 1,2
+;
+
+DROP TABLE IF EXISTS #guest_cohort_summary;
+SELECT DENSE_RANK() OVER (ORDER BY gg.country, gg.channels, gg.signup_month) AS cohort_id
+     , gg.group_id
+     , gg.country
+     , gg.channels
+     , gg.signup_month
+     , gg.signups
+     , grs.increments_from_signup
+     , NVL(gross_revenue_usd, 0)                        AS gross_revenue_usd
+     , NVL(trip_revenue_usd, 0)                         AS trip_revenue_usd
+     , NVL(host_earnings_usd, 0)                        AS host_earnings_usd
+     , NVL(net_revenue_usd, 0)                          AS net_revenue_usd
+     , NVL(booked_noc_days, 0)                          AS booked_noc_days
+     , NVL(paid_days, 0)                                AS paid_days
+     , NVL(trips, 0)                                    AS trips
+     , NVL(trip_days, 0)                                AS trip_days
+     , NVL(active_guests, 0)                            AS active_guests
+     , NVL(activations,0)                               AS activations
+     , NVL(accumulated_activations,0)                   AS accumulated_activations
+     , NVL(total_cost, 0)                               AS total_cost
+     , NVL(net_revenue_usd, 0) - NVL(total_cost, 0)     AS adjusted_contribution
+     , NVL(ss.search_sessions,0)                        AS search_sessions
+INTO #guest_cohort_summary
+FROM #temp_guest_group gg
+         LEFT JOIN #temp_guest_revenue_summary grs
+                   ON gg.group_id = grs.group_id
+         LEFT JOIN #temp_guest_cost_summary gcs
+                   ON grs.group_id = gcs.group_id
+                       and grs.increments_from_signup=gcs.increments_from_signup
+         left join #temp_search_session ss
+                   on grs.group_id=ss.group_id
+                       and grs.increments_from_signup=ss.increments_from_signup
+;
+
+------------------------------------------------------build #marketing_cost--------------------------------------------------------------
+drop table if exists #marketing_cost;
+select country,
+       signup_month,
+       channel_lvl_5 as channels,
+       sum(calculated_marketing_cost) as marketing_cost
+into #marketing_cost
+from marketing.marketing_cps_cpa_by_channels
+group by 1,2,3
+;
+
+
+drop table if exists #historical_paid_days_per_signup;
+select t1.*,
+       t2.marketing_cost
+into #historical_paid_days_per_signup
+from
+(select cohort_id,
+       country,
+       channels,
+       signup_month,
+       increments_from_signup,
+       signups,
+       sum(paid_days) as paid_days,
+       sum(net_revenue_usd) as net_revenue,
+       sum(adjusted_contribution) as adjusted_contribution,
+       sum(total_cost) as cost,
+       sum(trips) as trips,
+       sum(activations) as activations,
+       sum(accumulated_activations) as accumulated_activations,
+       sum(search_sessions) as search_sessions
+from #guest_cohort_summary a
+where 1=1
+--and increments_from_signup<=12
+group by 1,2,3,4,5,6
+order by 1,2,3,4,5,6) t1
+
+left join #marketing_cost t2
+on t1.country=t2.country
+and t1.channels=t2.channels
+and t1.signup_month=t2.signup_month
+;
+
+
 ---------------------------------trip days from data science model---------------------------------------
 --prediction for US only
 drop table if exists #temp_signup_base_us_only;
@@ -252,7 +486,7 @@ into #net_revenue_of_activation_trip
 from
     (select driver_id,
            channels,
-           date_trunc('month',dateadd('month',1,prediction_date)) as signup_month
+           date_trunc('month',dateadd('month',2,prediction_date)) as signup_month
     from #ltr
     group by 1,2,3) a
 left join
@@ -336,7 +570,7 @@ from
                 when date_part('month',signup_month)=11 then 0.92
                 when date_part('month',signup_month)=12 then 0.93
            else null end as seasonal_index
-         from tableau.historical_master
+         from #historical_paid_days_per_signup
          where country='US' and increments_from_signup<=2)
 ;
 
@@ -361,9 +595,9 @@ FROM #actual_2_increments a
 
 select *
 from #demand_paid_days_cps
-where channels in ('Apple','Google_Desktop','Google_Desktop_Brand','Google_Discovery',
-    'Google_Mobile','Google_Mobile_Brand','Google_UAC_Android','Kayak_Desktop',
-    'Kayak_Desktop_Core', 'Kayak_Mobile_Core','Mediaalpha','Expedia','Microsoft_Desktop',
-    'Microsoft_Desktop_Brand','Microsoft_Mobile', 'Microsoft_Mobile_Brand','Kayak_Desktop_Front_Door',
-    'Kayak_Desktop_Compare','Google_Pmax','Kayak_Desktop_Carousel','Kayak_Mobile_Carousel',
-    'Kayak_Mobile','Kayak_Afterclick', 'Facebook/IG_App', 'Facebook/IG_Web');
+where channels in ('Apple', 'Apple_Brand', 'Google_Desktop','Google_Desktop_Brand',
+    'Google_Mobile','Google_Mobile_Brand','Kayak_Desktop', 'Kayak_Desktop_Core', 
+    'Kayak_Mobile_Core','Mediaalpha','Expedia','Microsoft_Desktop',
+    'Microsoft_Desktop_Brand', 'Reddit', 'Moloco', 'Kayak_Desktop_Compare',
+    'Google_Pmax','Kayak_Desktop_Carousel','Kayak_Mobile_Carousel',
+    'Kayak_Afterclick', 'Facebook/IG_App', 'Facebook/IG_Web');

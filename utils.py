@@ -32,7 +32,7 @@ def update_paid_days(signup_month_start, channel, signup_value):
 
     # I'd consider a groupby apply here (I can see the need to iterate progressively through increments
     #   , but could be more efficient to groupby apply on channels)
-    while signup_month_start <= pd.to_datetime('2024-08-01'):
+    while signup_month_start <= pd.to_datetime('2024-11-01'):
         channel_month_ind = (signup_value.channels == channel) & (signup_value.signup_month == signup_month_start)
         # Take the first unpopulated increment, this MIGHT run into issues for thin channels where we project 0 paid days, but probably fine
         increments_start = signup_value.loc[
@@ -216,3 +216,30 @@ def calculate_accuracy_measures(top_n_channels, cpd_payback, monaco_payback):
     accuracy_measure_top_n['pcnt_MAPE_improvement'] = (accuracy_measure_top_n['avg_MAPE_v1'] - accuracy_measure_top_n['avg_MAPE_v2'])*100/accuracy_measure_top_n['avg_MAPE_v1']
 
     return accuracy_measure_top_n
+
+def calculate_accuracy_measures_nrpd(top_n_channels, weighted_nrpd_payback):
+    # Filter data for the specified period
+    #cpd_payback_2024 = cpd_payback.loc[cpd_payback.forecast_month >= '2024-01-01'].reset_index(drop=True)
+    
+    # Get the top N channels based on data volume
+    top_channels = weighted_nrpd_payback.groupby(['channels'])['data_volume_y'].mean().sort_values(ascending=False)[:top_n_channels].index.to_list()
+    
+    # Filter monaco_payback data for the top N channels
+    nrpd_payback_2024_top_n = weighted_nrpd_payback.loc[(weighted_nrpd_payback.channels.isin(top_channels))].reset_index(drop=True)
+    
+    # Calculate average MAPE for all segments
+    avg_MAPE_v2_all = nrpd_payback_2024_top_n['MAPE_v2'].mean()
+    avg_MAPE_v1_all = nrpd_payback_2024_top_n['MAPE_v1'].mean()
+    
+    # Create rows for all segments and append to accuracy_measure_A
+    accuracy_measure_A = pd.DataFrame({
+        'channels': [f'top_{top_n_channels}_channels'],
+        'Period': ['2024-01 ~ 2024-09'],
+        'avg_MAPE_v2': [avg_MAPE_v2_all],
+        'avg_MAPE_v1': [avg_MAPE_v1_all]
+    })
+    
+    # Combine all accuracy measures
+    accuracy_measure_A['pcnt_MAPE_improvement'] = (accuracy_measure_A['avg_MAPE_v1'] - accuracy_measure_A['avg_MAPE_v2'])*100/accuracy_measure_A['avg_MAPE_v1']
+
+    return accuracy_measure_A
