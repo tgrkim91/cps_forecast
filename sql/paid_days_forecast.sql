@@ -1,3 +1,7 @@
+/*
+Main Questions
+1) Where do we filter to only fully observed periods for records?
+*/
 drop table if exists #attribution_v3_signups;
 select driver_id,
        signup_date,
@@ -158,6 +162,7 @@ from
     WHERE 1 = 1
       and grb.date>=gm.activation_date
       AND grb.date < CURRENT_DATE - 1
+      -- What does this mean?
       AND DATEADD('month', CAST(increments_from_signup - 1 AS int), gm.signup_month)::Date < DATE_TRUNC('month', CURRENT_DATE)::Date
     GROUP BY 1, 2) t1
 left join #temp_guest_group_add_activations t2
@@ -378,6 +383,7 @@ from
 
 inner join #temp_signup_base_us_only b
 on a.driver_id=b.driver_id
+-- For each prediction, only include predictions for records between 30-60 days post-signup at time of prediction
 where DATEDIFF(day, b.signup_date, date_trunc('day',a.created))<=60 and DATEDIFF(day, b.signup_date, date_trunc('day',a.created))>=30;--averaging by signup date, with 30 day offset
 
 
@@ -418,6 +424,7 @@ from (select *
             from #temp_signup_base_us_only
             group by 1, 2)
             union all
+            -- Create a new row for future months
             (select distinct channels,
                     dateadd('month',1,date_trunc('month',CURRENT_DATE)) as signup_month,
                     1000 as num_signups
@@ -486,6 +493,7 @@ into #net_revenue_of_activation_trip
 from
     (select driver_id,
            channels,
+           -- This seems inconsistent, we're using the curve from 2 months prior (September cohort) with the actuals from 3 months prior (August cohort)?
            date_trunc('month',dateadd('month',2,prediction_date)) as signup_month
     from #ltr
     group by 1,2,3) a
@@ -557,6 +565,7 @@ from
            signup_month,
            increments_from_signup,
            paid_days::float/signups::float as paid_days_per_signup_original,
+           -- Is this from Jodie's original code?
            case when date_part('month',signup_month)=1 then 0.93
                 when date_part('month',signup_month)=2 then 0.92
                 when date_part('month',signup_month)=3 then 1.00
@@ -586,10 +595,12 @@ SELECT b.channels,
        a.paid_days_per_signup*1 AS projected_paid_days
 INTO #demand_paid_days_cps
 FROM #actual_2_increments a
+        
          RIGHT JOIN (SELECT * FROM #ds_curve_by_signup_month_cps
                     WHERE increments_from_signup<=12
                     and signup_month<>'2023-06-01') b --no ltr model for June 2023
               ON  a.channels=b.channels
+              -- Take the actuals corresponding to 3 months ago to predict for a given signup month
               AND a.signup_month = dateadd('month',-3,b.signup_month) --pay attention
               AND a.increments_from_signup = b.increments_from_signup;
 
