@@ -163,7 +163,7 @@ from
       and grb.date>=gm.activation_date
       AND grb.date < CURRENT_DATE - 1
       -- What does this mean?
-      AND DATEADD('month', CAST(increments_from_signup - 1 AS int), gm.signup_month)::Date < DATE_TRUNC('month', CURRENT_DATE)::Date
+      AND DATEADD('day', 30 * increments_from_signup, gm.signup_date) < DATEADD('day', -2, CURRENT_DATE::Date) -- Exclude anyone who doesn't have a full increment observed
     GROUP BY 1, 2) t1
 left join #temp_guest_group_add_activations t2
 on t1.group_id=t2.group_id and t1.increments_from_signup=t2.increments_from_signup
