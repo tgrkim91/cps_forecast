@@ -109,5 +109,5 @@ FROM
     WHERE TRUE
         -- drop reservations where trip dates were before their signup date (some errors in the observations)
         AND s.signup_month <= d.date
-        AND trip_month < DATEADD('month', -1, DATE_TRUNC('month', CURRENT_DATE)))
+        AND trip_month <= DATEADD('month', -1, DATE_TRUNC('month', CURRENT_DATE)))
 GROUP BY 1, 2, 3;

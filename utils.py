@@ -132,7 +132,7 @@ def plot_monaco_forecasts(monaco_df, monaco_segment, size=(13, 80)):
     names = ['Forecast V2', 'Forecast V1', 'Actual']
 
     _, axes = plt.subplots(num_plots, 1, figsize=size)
-    plt.subplots_adjust(hspace=0.5)  # Increase the vertical space between plots
+    plt.subplots_adjust(hspace=0.5, top=0.96)  # Increase the vertical space between plots and adjust top space
     plt.suptitle('Monaco Share Accuracy by Channel {monaco}'.format(monaco = monaco_segment), fontsize=16, fontweight='bold')
 
     for ax, channel in zip(axes, channels):
@@ -243,3 +243,61 @@ def calculate_accuracy_measures_nrpd(top_n_channels, weighted_nrpd_payback):
     accuracy_measure_A['pcnt_MAPE_improvement'] = (accuracy_measure_A['avg_MAPE_v1'] - accuracy_measure_A['avg_MAPE_v2'])*100/accuracy_measure_A['avg_MAPE_v1']
 
     return accuracy_measure_A
+
+def calculate_accuracy_measures_pcp(top_n_channels, all_agg):
+    # Filter data for the specified period
+    #cpd_payback_2024 = cpd_payback.loc[cpd_payback.forecast_month >= '2024-01-01'].reset_index(drop=True)
+    
+    # Get the top N channels based on data volume
+    top_channels = all_agg.groupby(['channels'])['trips'].mean().sort_values(ascending=False)[:top_n_channels].index.to_list()
+    
+    # Filter monaco_payback data for the top N channels
+    pcp_2024_top_n = all_agg.loc[(all_agg.channels.isin(top_channels))].reset_index(drop=True)
+    
+    # Calculate average MAPE for all segments
+    avg_MAPE_v2_all = pcp_2024_top_n['MAPE_v2'].mean()
+    avg_MAPE_v1_all = pcp_2024_top_n['MAPE_v1'].mean()
+    
+    # Create rows for all segments and append to accuracy_measure_A
+    accuracy_measure_A = pd.DataFrame({
+        'channels': [f'top_{top_n_channels}_channels'],
+        'Period': ['2024-01 ~ 2024-06'],
+        'avg_MAPE_v2': [avg_MAPE_v2_all],
+        'avg_MAPE_v1': [avg_MAPE_v1_all]
+    })
+    
+    # Combine all accuracy measures
+    accuracy_measure_A['pcnt_MAPE_improvement'] = (accuracy_measure_A['avg_MAPE_v1'] - accuracy_measure_A['avg_MAPE_v2'])*100/accuracy_measure_A['avg_MAPE_v1']
+
+    return accuracy_measure_A
+
+
+def pdps_forecast_plot(df):
+    channels = df['channels'].unique()
+
+    fig, axes = plt.subplots(nrows=len(channels), ncols=1, figsize=(14, len(channels) * 4))
+
+    for ax, channel in zip(axes, channels):
+        channel_data = df[df['channels'] == channel]
+        
+        # Plot projected_paid_days
+        ax.plot(channel_data['signup_month'], channel_data['projected_paid_days'], marker='o', color='b', label='Projected Paid Days')
+        ax.set_title(f'Projected Paid Days and Signups for {channel}')
+        ax.set_xlabel('Signup Month')
+        ax.set_ylabel('Projected Paid Days', color='b')
+        ax.tick_params(axis='y', labelcolor='b')
+        
+        # Create a twin Axes sharing the xaxis
+        ax2 = ax.twinx()
+        # Plot num_signups_actual_by_increment and num_signups_from_activation as bar plots with specified width
+        ax2.bar(channel_data['signup_month'], channel_data['num_signups_actual_by_increment'], width=10, alpha=0.6, color='g', label='Actual Signups')
+        ax2.bar(channel_data['signup_month'], channel_data['num_signups_from_activation'], width=10, alpha=0.6, color='r', label='Signups from Activation', bottom=channel_data['num_signups_actual_by_increment'])
+        ax2.set_ylabel('Number of Signups', color='g')
+        ax2.tick_params(axis='y', labelcolor='g')
+        
+        # Add legends
+        ax.legend(loc='upper left')
+        ax2.legend(loc='upper right')
+
+    plt.tight_layout()
+    plt.show()

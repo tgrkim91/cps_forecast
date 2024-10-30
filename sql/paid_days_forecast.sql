@@ -385,6 +385,7 @@ drop table if exists #activation1;
 select channels,
        estimation_month,
        month_since_signup,
+       num_signups_activation,
        cumulative_activate_rate,
        (case when month_since_signup>1 then cumulative_activate_rate-previous_activate_rate else cumulative_activate_rate end) as incremental_activate_rate
 into #activation1
@@ -395,7 +396,8 @@ from
         (select channels,
                date_trunc('month',dateadd('month',2,prediction_date)) as estimation_month,
                month_since_signup,
-               avg(activate_prob) as cumulative_activate_rate
+               avg(activate_prob) as cumulative_activate_rate,
+               count(distinct driver_id) as num_signups_activation
         from #activation
         group by 1,2,3));
 
@@ -511,6 +513,24 @@ on a.driver_id=b.driver_id
 group by 1,2
 order by 1,2;
 
+------------num_signups_used_from_each_model--------------
+drop table if exists #num_signups_used_from_prediction;
+select a.*,
+    b.num_signups_from_activation
+into #num_signups_used_from_prediction
+from (select channels,
+        date_trunc('month',dateadd('month',2,prediction_date)) as estimation_month,
+        count(distinct driver_id) as num_signups_from_ltr
+    from #ltr
+    group by 1,2) as a 
+    left join (
+        select channels,
+            date_trunc('month',dateadd('month',2,prediction_date)) as estimation_month,
+            count(distinct driver_id) as num_signups_from_activation
+        from #activation
+        group by 1,2
+    ) as b on a.channels=b.channels and a.estimation_month=b.estimation_month;
+
 ------------paid days per signup----------------
 drop table if exists #paid_days_per_signup_ds;
 select a.channels,
@@ -520,11 +540,15 @@ select a.channels,
        a.trip_month,
        a.ltr_per_signup,
        b.net_revenue_per_day,
-       a.ltr_per_signup::float/b.net_revenue_per_day::float as paid_days_per_signup
+       a.ltr_per_signup::float/b.net_revenue_per_day::float as paid_days_per_signup,
+       c.num_signups_from_ltr,
+       c.num_signups_from_activation
 into #paid_days_per_signup_ds
 from #ds_final a
 left join #net_revenue_of_activation_trip b
 on a.channels=b.channels and a.signup_month=b.signup_month
+left join #num_signups_used_from_prediction c
+on a.channels=c.channels and a.signup_month=c.estimation_month
 order by 1,2,3;
 
 DROP TABLE IF EXISTS #ds_curve_by_signup_month_cps;
@@ -538,6 +562,8 @@ select * INTO #ds_curve_by_signup_month_cps from
 (SELECT channels,
        signup_month,
        increments_from_signup,
+       num_signups_from_ltr,
+       num_signups_from_activation,
        activations,
        sum(activations) over (partition by channels,signup_month order by increments_from_signup ROWS UNBOUNDED PRECEDING) as accumulated_activations,
        paid_days_per_signup,
@@ -556,6 +582,7 @@ from
     (select channels,
            signup_month,
            increments_from_signup,
+           signups::float as num_signups_actual_by_increment,
            paid_days::float/signups::float as paid_days_per_signup_original,
            case when date_part('month',signup_month)=1 then 0.93
                 when date_part('month',signup_month)=2 then 0.92
@@ -579,10 +606,13 @@ DROP TABLE IF EXISTS #demand_paid_days_cps;
 SELECT b.channels,
        b.signup_month,
        b.increments_from_signup,
+       b.num_signups_from_ltr,
+       b.num_signups_from_activation,
        b.activations,
        b.accumulated_activations,
        b.paid_days_per_signup,
        b.ds_curve,
+       a.num_signups_actual_by_increment,
        a.paid_days_per_signup*1 AS projected_paid_days
 INTO #demand_paid_days_cps
 FROM #actual_2_increments a
