@@ -1,10 +1,8 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
-from os import path
 from python_ml_common.config import RedshiftConfig, load_envvars
 from python_ml_common.loader.redshift import RedshiftLoader
-from pathlib import Path
 
 
 def loader():
