@@ -77,27 +77,36 @@ WHERE 1 = 1
 ;
 
 DROP TABLE IF EXISTS #temp_guest_base;
-SELECT sb.driver_id
-  , sb.signup_date
-  , sb.signup_month
-  , sb.channels
-  , sb.platform
-  , sb.country
-  , ga.first_booking_date::D                        AS first_booking_date
-  , DATE_TRUNC('month', ga.first_booking_date)::D   AS first_booking_month
-  , ga.activation_date::D                           AS activation_date
-  , DATE_TRUNC('month', ga.activation_date)::D      AS activation_month
+SELECT *
 INTO #temp_guest_base
-FROM #temp_signup_base sb
+FROM (
+    select sb.driver_id
+        , sb.signup_date
+        , sb.signup_month
+        , sb.channels
+        , case when sb.channels in ('Kayak_Desktop', 'Kayak_Desktop_Carousel', 'Kayak_Afterclick', 'Kayak_Desktop_Compare', 'Kayak_Desktop_Front_Door') then 'Kayak_Desktop_Ad'
+            when sb.channels in ('Kayak_Mobile_Carousel', 'Kayak_Mobile', 'Kayak_Mobile_Front_Door') then 'Kayak_Mobile_Ad'
+            when sb.channels in ('Facebook/IG_App','Apple') then 'all_app'
+            when sb.channels in ('Facebook/IG_Web', 'Mediaalpha','Expedia', 'Reddit') then 'all web'
+            else sb.channels end as segment
+        , sb.platform
+        , sb.country
+        , ga.first_booking_date::D                        AS first_booking_date
+        , DATE_TRUNC('month', ga.first_booking_date)::D   AS first_booking_month
+        , ga.activation_date::D                           AS activation_date
+        , DATE_TRUNC('month', ga.activation_date)::D      AS activation_month
+    from #temp_signup_base sb
     LEFT JOIN #temp_guest_activation ga
         ON sb.driver_id = ga.driver_id
-;
+    -- filter to drivers from whom we observe two full increments
+    where DATEADD('day', 60, sb.signup_date)::Date < CURRENT_DATE - 1
+);
 
 DROP TABLE IF EXISTS #temp_guest_group_map;
 SELECT *
      , DENSE_RANK() OVER (ORDER BY
        country
-     , channels
+     , segment
      , signup_month
      ) AS group_id
 INTO #temp_guest_group_map
@@ -107,23 +116,23 @@ FROM #temp_guest_base
 DROP TABLE IF EXISTS #temp_guest_group;
 SELECT a.group_id
      , a.country
-     , a.channels
+     , a.segment
      , a.signup_month
      , b.signups
 INTO #temp_guest_group
 FROM #temp_guest_group_map a
 left join
-    (select country,channels,signup_month,count(distinct driver_id) as signups
+    (select country,segment,signup_month,count(distinct driver_id) as signups
         from #temp_guest_group_map
         group by 1,2,3) b
-on a.country=b.country and a.channels=b.channels and a.signup_month=b.signup_month
+on a.country=b.country and a.segment=b.segment and a.signup_month=b.signup_month
 GROUP BY 1, 2, 3, 4, 5
 ;
 
 DROP TABLE IF EXISTS #temp_guest_group_add_activations;
 SELECT group_id
      , country
-     , channels
+     , segment
      , signup_month
      , FLOOR(DATEDIFF(day, signup_date, activation_date)/30) + 1 AS increments_from_signup
      , count(distinct driver_id) as activations
@@ -158,7 +167,7 @@ from
     WHERE 1 = 1
       and grb.date>=gm.activation_date
       AND grb.date < CURRENT_DATE - 1
-      AND DATEADD('month', CAST(increments_from_signup - 1 AS int), gm.signup_month)::Date < DATE_TRUNC('month', CURRENT_DATE)::Date
+      AND DATEADD('day', 60, gm.signup_date)::Date < CURRENT_DATE - 1
     GROUP BY 1, 2) t1
 left join #temp_guest_group_add_activations t2
 on t1.group_id=t2.group_id and t1.increments_from_signup=t2.increments_from_signup
@@ -196,7 +205,7 @@ FROM finance.reservation_profit_summary ps -- how many months
 WHERE 1 = 1
   and d.date>=gm.activation_date
   AND COALESCE(CASE WHEN rs.current_status IN (2, 11) THEN rs.modified::DATE END, d.date) < CURRENT_DATE - 1
-  AND DATEADD('month', CAST(increments_from_signup - 1 AS int), gm.signup_month)::Date < DATE_TRUNC('month', CURRENT_DATE)::Date
+  AND DATEADD('day', 60, gm.signup_date)::Date < CURRENT_DATE - 1
 GROUP BY 1, 2
 ;
 
@@ -212,15 +221,15 @@ WHERE 1 = 1
   and sd.search=1
   and sd.created>=gm.signup_date
   AND sd.created < CURRENT_DATE - 1
-  AND DATEADD('month', CAST(increments_from_signup - 1 AS int), gm.signup_month)::Date < DATE_TRUNC('month', CURRENT_DATE)::Date
+  AND DATEADD('day', 60, gm.signup_date)::Date < CURRENT_DATE - 1
 group by 1,2
 ;
 
 DROP TABLE IF EXISTS #guest_cohort_summary;
-SELECT DENSE_RANK() OVER (ORDER BY gg.country, gg.channels, gg.signup_month) AS cohort_id
+SELECT DENSE_RANK() OVER (ORDER BY gg.country, gg.segment, gg.signup_month) AS cohort_id
      , gg.group_id
      , gg.country
-     , gg.channels
+     , gg.segment
      , gg.signup_month
      , gg.signups
      , grs.increments_from_signup
@@ -263,13 +272,12 @@ group by 1,2,3
 
 
 drop table if exists #historical_paid_days_per_signup;
-select t1.*,
-       t2.marketing_cost
+select t1.*
 into #historical_paid_days_per_signup
 from
 (select cohort_id,
        country,
-       channels,
+       segment,
        signup_month,
        increments_from_signup,
        signups,
@@ -286,11 +294,6 @@ where 1=1
 --and increments_from_signup<=12
 group by 1,2,3,4,5,6
 order by 1,2,3,4,5,6) t1
-
-left join #marketing_cost t2
-on t1.country=t2.country
-and t1.channels=t2.channels
-and t1.signup_month=t2.signup_month
 ;
 
 
@@ -299,8 +302,16 @@ and t1.signup_month=t2.signup_month
 drop table if exists #temp_signup_base_us_only;
 select *
 into #temp_signup_base_us_only
-from #temp_signup_base
-where country='US';
+from (
+    select *,
+        case when channels in ('Kayak_Desktop', 'Kayak_Desktop_Carousel', 'Kayak_Afterclick', 'Kayak_Desktop_Compare', 'Kayak_Desktop_Front_Door') then 'Kayak_Desktop_Ad'
+            when channels in ('Kayak_Mobile_Carousel', 'Kayak_Mobile', 'Kayak_Mobile_Front_Door') then 'Kayak_Mobile_Ad'
+            when channels in ('Facebook/IG_App','Apple') then 'all_app'
+            when channels in ('Facebook/IG_Web', 'Mediaalpha','Expedia', 'Reddit') then 'all web'
+            else channels end as segment
+    from #temp_signup_base
+    where country='US'
+);
 
 --ltr
 drop table if exists #ltr;
@@ -308,6 +319,7 @@ select a.driver_id
      , b.signup_date
      , b.signup_month
      , b.channels
+     , b.segment
      , a.days_since_first_trip_end/28 as month_since_first_trip
      , a.ltr
      ,date_trunc('day',a.prediction_date)::D as prediction_date
@@ -335,7 +347,7 @@ on lha.driver_id=a.driver_id AND lha.run_id=a.run_id
 where DATEDIFF(day, b.signup_date, date_trunc('day',a.prediction_date))<=60 and DATEDIFF(day, b.signup_date, date_trunc('day',a.prediction_date))>=30;
 
 drop table if exists #ltr1;
-select channels,
+select segment,
        date_trunc('month',dateadd('month',2,prediction_date)) as estimation_month,
        month_since_first_trip,
        avg(ltr) as ltr_per_activation
@@ -350,6 +362,7 @@ select
        , b.signup_date
        , b.signup_month
        , b.channels
+       , b.segment
        , a.pred_day_after_signup/28 as month_since_signup
        , a.pred_p as activate_prob
        , date_trunc('day',a.created)::D as prediction_date
@@ -378,11 +391,12 @@ from
 
 inner join #temp_signup_base_us_only b
 on a.driver_id=b.driver_id
+-- For each prediction, only include predictions for records between 30-60 days post-signup at time of prediction
 where DATEDIFF(day, b.signup_date, date_trunc('day',a.created))<=60 and DATEDIFF(day, b.signup_date, date_trunc('day',a.created))>=30;--averaging by signup date, with 30 day offset
 
 
 drop table if exists #activation1;
-select channels,
+select segment,
        estimation_month,
        month_since_signup,
        num_signups_activation,
@@ -391,9 +405,9 @@ select channels,
 into #activation1
 from
     (select *,
-           lag(cumulative_activate_rate,1) over (partition by channels,estimation_month order by month_since_signup) as previous_activate_rate
+           lag(cumulative_activate_rate,1) over (partition by segment,estimation_month order by month_since_signup) as previous_activate_rate
     from
-        (select channels,
+        (select segment,
                date_trunc('month',dateadd('month',2,prediction_date)) as estimation_month,
                month_since_signup,
                avg(activate_prob) as cumulative_activate_rate,
@@ -404,7 +418,7 @@ from
 
 --ds_master
 drop table if exists #activation3;
-select a.channels,
+select a.segment,
        a.signup_month,
        a.num_signups,
        b.month_since_signup,
@@ -414,24 +428,24 @@ select a.channels,
        a.num_signups*b.incremental_activate_rate as activations
 into #activation3
 from (select *
-      from (select channels,
+      from (select segment,
                    signup_month,
                    count(1) as num_signups
             from #temp_signup_base_us_only
             group by 1, 2)
             union all
-            (select distinct channels,
-                    dateadd('month',1,date_trunc('month',CURRENT_DATE)) as signup_month,
+            (select distinct segment,
+                    dateadd('month',1,date_trunc('month',CURRENT_DATE-2)) as signup_month,
                     1000 as num_signups
             from #temp_signup_base_us_only)
      ) a
 left join #activation1 b
-on a.channels=b.channels
+on a.segment=b.segment
 and a.signup_month=b.estimation_month;
 
 
 drop table if exists #ds_master;
-select a.channels,
+select a.segment,
        a.signup_month,
        a.num_signups,
        a.month_since_signup,
@@ -447,17 +461,17 @@ select a.channels,
 into #ds_master
 from #activation3 a
 left join #ltr1 b
-on a.channels=b.channels
+on a.segment=b.segment
 and a.signup_month=b.estimation_month;
 
 
 drop table if exists #ds_final;
 select a.*,
        b.activations,
-       a.accumulated_ltr_per_signup-nvl(lag(a.accumulated_ltr_per_signup,1) over (partition by a.channels,a.signup_month order by a.increments_from_signup),0) as ltr_per_signup
+       a.accumulated_ltr_per_signup-nvl(lag(a.accumulated_ltr_per_signup,1) over (partition by a.segment,a.signup_month order by a.increments_from_signup),0) as ltr_per_signup
 into #ds_final
 from
-    (select channels,
+    (select segment,
            signup_month,
            ltr_month_since_singup+1 as increments_from_signup,
            ltr_month as trip_month,
@@ -466,20 +480,20 @@ from
     where ltr_month_since_singup+1<=24
     group by 1,2,3,4) a
 join
-    (select channels,
+    (select segment,
            signup_month,
            month_since_signup as increments_from_signup,
            avg(activations) as activations
     from #ds_master
     where ltr_month_since_singup+1<=24
     group by 1,2,3) b
-on a.channels=b.channels
+on a.segment=b.segment
 and a.signup_month=b.signup_month
 and a.increments_from_signup=b.increments_from_signup;
 
 --------------net revenue per trip day of activation trip---------
 drop table if exists #net_revenue_of_activation_trip;
-select a.channels,
+select a.segment,
        a.signup_month,
        sum(b.gaap_net_revenue::float) as gaap_net_revenue,
        sum(b.paid_days::float) as paid_days,
@@ -487,7 +501,7 @@ select a.channels,
 into #net_revenue_of_activation_trip
 from
     (select driver_id,
-           channels,
+           segment,
            date_trunc('month',dateadd('month',2,prediction_date)) as signup_month
     from #ltr
     group by 1,2,3) a
@@ -518,22 +532,22 @@ drop table if exists #num_signups_used_from_prediction;
 select a.*,
     b.num_signups_from_activation
 into #num_signups_used_from_prediction
-from (select channels,
+from (select segment,
         date_trunc('month',dateadd('month',2,prediction_date)) as estimation_month,
         count(distinct driver_id) as num_signups_from_ltr
     from #ltr
     group by 1,2) as a 
     left join (
-        select channels,
+        select segment,
             date_trunc('month',dateadd('month',2,prediction_date)) as estimation_month,
             count(distinct driver_id) as num_signups_from_activation
         from #activation
         group by 1,2
-    ) as b on a.channels=b.channels and a.estimation_month=b.estimation_month;
+    ) as b on a.segment=b.segment and a.estimation_month=b.estimation_month;
 
 ------------paid days per signup----------------
 drop table if exists #paid_days_per_signup_ds;
-select a.channels,
+select a.segment,
        a.signup_month,
        a.increments_from_signup,
        a.activations,
@@ -546,26 +560,26 @@ select a.channels,
 into #paid_days_per_signup_ds
 from #ds_final a
 left join #net_revenue_of_activation_trip b
-on a.channels=b.channels and a.signup_month=b.signup_month
+on a.segment=b.segment and a.signup_month=b.signup_month
 left join #num_signups_used_from_prediction c
-on a.channels=c.channels and a.signup_month=c.estimation_month
+on a.segment=c.segment and a.signup_month=c.estimation_month
 order by 1,2,3;
 
 DROP TABLE IF EXISTS #ds_curve_by_signup_month_cps;
 WITH pcp_denom AS (
     SELECT *,
-           LAG(paid_days_per_signup) OVER (PARTITION BY channels,signup_month ORDER BY increments_from_signup) AS previous_paid_days_per_signup
+           LAG(paid_days_per_signup) OVER (PARTITION BY segment,signup_month ORDER BY increments_from_signup) AS previous_paid_days_per_signup
     FROM #paid_days_per_signup_ds
 )
 
 select * INTO #ds_curve_by_signup_month_cps from
-(SELECT channels,
+(SELECT segment,
        signup_month,
        increments_from_signup,
        num_signups_from_ltr,
        num_signups_from_activation,
        activations,
-       sum(activations) over (partition by channels,signup_month order by increments_from_signup ROWS UNBOUNDED PRECEDING) as accumulated_activations,
+       sum(activations) over (partition by segment,signup_month order by increments_from_signup ROWS UNBOUNDED PRECEDING) as accumulated_activations,
        paid_days_per_signup,
        previous_paid_days_per_signup,
        CASE WHEN increments_from_signup=1 THEN 1 ELSE paid_days_per_signup::FLOAT /previous_paid_days_per_signup::FLOAT END AS ds_curve
@@ -579,7 +593,7 @@ select *,
        paid_days_per_signup_original*seasonal_index as paid_days_per_signup
 into #actual_2_increments
 from
-    (select channels,
+    (select segment,
            signup_month,
            increments_from_signup,
            signups::float as num_signups_actual_by_increment,
@@ -598,12 +612,13 @@ from
                 when date_part('month',signup_month)=12 then 0.93
            else null end as seasonal_index
          from #historical_paid_days_per_signup
+        -- Take the actuals corresponding to 3 months ago to predict for a given signup month
          where country='US' and increments_from_signup<=2)
 ;
 
 --need to update join on signup_month, already did
 DROP TABLE IF EXISTS #demand_paid_days_cps;
-SELECT b.channels,
+SELECT b.segment,
        b.signup_month,
        b.increments_from_signup,
        b.num_signups_from_ltr,
@@ -619,15 +634,26 @@ FROM #actual_2_increments a
          RIGHT JOIN (SELECT * FROM #ds_curve_by_signup_month_cps
                     WHERE increments_from_signup<=12
                     and signup_month<>'2023-06-01') b --no ltr model for June 2023
-              ON  a.channels=b.channels
+              ON  a.segment=b.segment
               AND a.signup_month = dateadd('month',-3,b.signup_month) --pay attention
               AND a.increments_from_signup = b.increments_from_signup;
 
-select *
-from #demand_paid_days_cps
+select a.channels,
+    b.*
+from (
+    select channels,
+        case when channels in ('Kayak_Desktop', 'Kayak_Desktop_Carousel', 'Kayak_Afterclick', 'Kayak_Desktop_Compare', 'Kayak_Desktop_Front_Door') then 'Kayak_Desktop_Ad'
+            when channels in ('Kayak_Mobile_Carousel', 'Kayak_Mobile', 'Kayak_Mobile_Front_Door') then 'Kayak_Mobile_Ad'
+            when channels in ('Facebook/IG_App','Apple') then 'all_app'
+            when channels in ('Facebook/IG_Web', 'Mediaalpha','Expedia', 'Reddit') then 'all web'
+            else channels end as segment
+    from (select distinct channels from #temp_signup_base)
+) a
+left join #demand_paid_days_cps b
+on a.segment = b.segment 
 where channels in ('Apple', 'Apple_Brand', 'Google_Desktop','Google_Desktop_Brand',
-    'Google_Mobile','Google_Mobile_Brand','Kayak_Desktop', 'Kayak_Desktop_Core', 
-    'Kayak_Mobile_Core','Mediaalpha','Expedia','Microsoft_Desktop',
-    'Microsoft_Desktop_Brand', 'Reddit', 'Moloco', 'Kayak_Desktop_Compare',
-    'Google_Pmax','Kayak_Desktop_Carousel','Kayak_Mobile_Carousel',
-    'Kayak_Afterclick', 'Facebook/IG_App', 'Facebook/IG_Web');
+            'Google_Mobile','Google_Mobile_Brand','Kayak_Desktop', 'Kayak_Desktop_Core', 
+            'Kayak_Mobile_Core','Mediaalpha','Expedia','Microsoft_Desktop',
+            'Microsoft_Desktop_Brand', 'Reddit', 'Moloco', 'Kayak_Desktop_Compare',
+            'Google_Pmax','Kayak_Desktop_Carousel','Kayak_Mobile_Carousel',
+            'Kayak_Afterclick', 'Facebook/IG_App', 'Facebook/IG_Web')

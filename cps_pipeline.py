@@ -39,8 +39,12 @@ payback_channels = [
 def main():
     ## Load data
     # NRPD
-    nrpd_forecast_v2 = pd.read_csv(path.join(CSV_PATH, "nrpd_forecast_nov.csv"))
-
+    nrpd_forecast_all = pd.read_csv(
+        path.join(CSV_PATH, "nrpd_forecast_regroup_final.csv")
+    )
+    nrpd_forecast_v2 = nrpd_forecast_all.loc[
+        nrpd_forecast_all.forecast_month == "2024-11-01"
+    ].reset_index(drop=True)
     nrpd_forecast_v2["forecast_month"] = pd.to_datetime(
         nrpd_forecast_v2["forecast_month"]
     )
@@ -59,28 +63,30 @@ def main():
 
     # CPD
     # v2_forecast_by_channel
-    cpd_nov = pd.read_csv(path.join(CSV_PATH, "cpd_forecast_0_3.csv"))
+    cpd_nov = pd.read_csv(path.join(CSV_PATH, "cpd_forecast_0_12_v2_regrouped.csv"))
 
     cpd_nov["trip_end_month"] = pd.to_datetime(cpd_nov["trip_end_month"])
 
     # PDPS
     rs = loader()
-    pdps_forecast = load_data(
-        sql_path=path.join(SQL_PATH, "paid_days_forecast.sql"), loader=rs
-    )
+    # pdps_forecast = load_data(
+    # sql_path=path.join(SQL_PATH, "paid_days_forecast.sql"), loader=rs
+    # )
+    pdps_forecast = pd.read_csv(path.join(CSV_PATH, "pdps_forecast.csv"))
+    pdps_forecast.signup_month = pd.to_datetime(pdps_forecast.signup_month)
 
     nov_pdps = pdps_forecast.loc[
         pdps_forecast.signup_month == "2024-11-01"
     ].reset_index(drop=True)
-    nov_pdps.loc[
-        (nov_pdps.projected_paid_days.isnull())
-        & (nov_pdps.increments_from_signup != 1),
-        "projected_paid_days",
-    ] = 0
 
-    for channel in nov_pdps.channels.unique():
-        signup_month_start = pd.to_datetime("2024-11-01")
-        update_paid_days(signup_month_start, channel, nov_pdps)
+    # nov_pdps.loc[
+    # (nov_pdps.projected_paid_days.isnull()),
+    # "projected_paid_days",
+    # ] = 0
+
+    # for channel in nov_pdps.channels.unique():
+    # signup_month_start = pd.to_datetime("2024-11-01")
+    # update_paid_days_v2(signup_month_start, channel, nov_pdps)
 
     # Halo effect
     halo_effect = load_data(sql_path="./sql/halo_effect.sql", loader=rs)
@@ -123,6 +129,7 @@ def main():
 
     nov_cps_targets = nov.groupby("channels", as_index=False).agg(
         {
+            "projected_paid_days": "sum",
             "nrpd_forecast_v2_weighted": "sum",
             "cost_per_day": "max",
             "pcp_per_signup": "sum",
