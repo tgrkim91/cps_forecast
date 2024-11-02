@@ -1,5 +1,10 @@
 __pycache__/
 *.csv
 outputs/
-ppt/
+cps_csv/
+cpd_csv/
 nov_csv/
+ppt/
+
+
+

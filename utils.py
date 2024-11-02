@@ -555,3 +555,127 @@ def pdps_forecast_plot(df):
 
     plt.tight_layout()
     plt.show()
+
+
+def cps_pdps_cpd_nrpd_plot(
+    cps_target_all,
+    corrected_nrpd_payback_2024,
+    cpd_payback_2024,
+    weighted_pdps_payback_2024,
+):
+    # Define the channels
+    channels = cps_target_all["channels"].unique()
+
+    # Create a 2x2 plot for each channel
+    for channel in channels:
+        fig, axs = plt.subplots(2, 2, figsize=(15, 10))
+        fig.suptitle(f"Channel: {channel}", fontsize=16)
+
+        # Plot 1: cps_target_v2 and cps_target_v1 over time
+        channel_data_cps = cps_target_all[cps_target_all["channels"] == channel]
+        axs[0, 0].plot(
+            channel_data_cps["forecast_month"],
+            channel_data_cps["cps_target_v2"],
+            "--",
+            label="CPS Target V2",
+            marker="o",
+        )
+        axs[0, 0].plot(
+            channel_data_cps["forecast_month"],
+            channel_data_cps["cps_target_v1"],
+            "--",
+            label="CPS Target V1",
+            marker="o",
+        )
+        axs[0, 0].set_title("CPS Target Over Time")
+        axs[0, 0].set_xlabel("Forecast Month")
+        axs[0, 0].set_ylabel("CPS Target")
+        # axs[0, 0].set_ylim(-3, 130)
+        axs[0, 0].legend()
+
+        # Plot 2: w_nrpd_forecast_v2, w_nrpd_forecast_v1, w_nrpd_actual
+        channel_data_nrpd = corrected_nrpd_payback_2024[
+            corrected_nrpd_payback_2024["channels"] == channel
+        ]
+        axs[0, 1].plot(
+            channel_data_nrpd["forecast_month"],
+            channel_data_nrpd["w_nrpd_forecast_v2"],
+            "--",
+            label="NRPD Forecast V2",
+            marker="o",
+        )
+        axs[0, 1].plot(
+            channel_data_nrpd["forecast_month"],
+            channel_data_nrpd["w_nrpd_forecast_v1"],
+            "--",
+            label="NRPD Forecast V1",
+            marker="o",
+        )
+        axs[0, 1].plot(
+            channel_data_nrpd["forecast_month"],
+            channel_data_nrpd["w_nrpd_actual"],
+            "-",
+            label="NRPD Actual",
+            marker="o",
+        )
+        axs[0, 1].set_title("NRPD Over Time")
+        axs[0, 1].set_xlabel("Forecast Month")
+        axs[0, 1].set_ylabel("NRPD")
+        axs[0, 1].set_ylim(20, 50)
+        axs[0, 1].legend()
+
+        # Plot 3: cpd_forecast_v2, cpd_forecast_v1, w_cpd_actual
+        channel_data_cpd = cpd_payback_2024[cpd_payback_2024["channels"] == channel]
+        axs[1, 0].plot(
+            channel_data_cpd["forecast_month"],
+            channel_data_cpd["cpd_forecast_v2"],
+            "--",
+            label="CPD Forecast V2",
+            marker="o",
+        )
+        axs[1, 0].plot(
+            channel_data_cpd["forecast_month"],
+            channel_data_cpd["cpd_forecast_v1"],
+            "--",
+            label="CPD Forecast V1",
+            marker="o",
+        )
+        axs[1, 0].plot(
+            channel_data_cpd["forecast_month"],
+            channel_data_cpd["w_cpd_actual"],
+            "-",
+            label="CPD Actual",
+            marker="o",
+        )
+        axs[1, 0].set_title("CPD Over Time")
+        axs[1, 0].set_xlabel("Forecast Month")
+        axs[1, 0].set_ylabel("CPD")
+        axs[1, 0].set_ylim(8, 45)
+        axs[1, 0].legend()
+
+        # Plot 4: projected_paid_days_v2, projected_paid_days_v1
+        channel_data_pdps = weighted_pdps_payback_2024[
+            weighted_pdps_payback_2024["channels"] == channel
+        ]
+        axs[1, 1].plot(
+            channel_data_pdps["signup_month"],
+            channel_data_pdps["projected_paid_days_v2"],
+            "--",
+            label="Projected Paid Days V2",
+            marker="o",
+        )
+        axs[1, 1].plot(
+            channel_data_pdps["signup_month"],
+            channel_data_pdps["projected_paid_days_v1"],
+            "--",
+            label="Projected Paid Days V1",
+            marker="o",
+        )
+        axs[1, 1].set_title("Projected Paid Days Over Time")
+        axs[1, 1].set_xlabel("Forecast Month")
+        axs[1, 1].set_ylabel("Projected Paid Days")
+        axs[1, 1].set_ylim(0.5, 4)
+        axs[1, 1].legend()
+
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
+        plt.show()
